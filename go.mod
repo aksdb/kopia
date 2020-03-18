@@ -21,6 +21,7 @@ require (
 	github.com/gorilla/mux v1.7.4
 	github.com/klauspost/compress v1.10.3
 	github.com/klauspost/pgzip v1.2.2
+	github.com/kurin/blazer v0.5.4-0.20190613185654-cf2f27cc0be3
 	github.com/kylelemons/godebug v1.1.0
 	github.com/mattn/go-colorable v0.1.6 // indirect
 	github.com/mattn/go-ieproxy v0.0.0-20200203040449-2dbc853185d9 // indirect
