@@ -33,7 +33,7 @@ type b2Storage struct {
 
 func (s *b2Storage) GetBlob(ctx context.Context, id blob.ID, offset, length int64) ([]byte, error) {
 
-	obj := s.bucket.Object(s.getObjectNameString(id))
+	obj := s.getObject(id)
 
 	var r *b2.Reader
 
@@ -85,9 +85,9 @@ func (s *b2Storage) PutBlob(ctx context.Context, id blob.ID, data blob.Bytes) er
 		defer progressCallback(string(id), int64(data.Length()), int64(data.Length()))
 	}
 
-	o := s.bucket.Object(s.getObjectNameString(id))
+	o := s.getObject(id)
 	w := o.NewWriter(ctx)
-	defer w.Close()
+	defer w.Close() //nolint:errcheck
 
 	_, err = iocopy.Copy(w, throttled)
 
@@ -95,12 +95,16 @@ func (s *b2Storage) PutBlob(ctx context.Context, id blob.ID, data blob.Bytes) er
 }
 
 func (s *b2Storage) DeleteBlob(ctx context.Context, id blob.ID) error {
-	o := s.bucket.Object(s.getObjectNameString(id))
+	o := s.getObject(id)
 	return translateError(o.Delete(ctx))
 }
 
-func (s *b2Storage) getObjectNameString(b blob.ID) string {
-	return s.Prefix + string(b)
+func (s *b2Storage) getObjectNameString(id blob.ID) string {
+	return s.Prefix + string(id)
+}
+
+func (s *b2Storage) getObject(id blob.ID) *b2.Object {
+	return s.bucket.Object(s.getObjectNameString(id))
 }
 
 func (s *b2Storage) ListBlobs(ctx context.Context, prefix blob.ID, callback func(blob.Metadata) error) error {
