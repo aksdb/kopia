@@ -51,7 +51,7 @@ func (s *b2Storage) GetBlob(ctx context.Context, id blob.ID, offset, length int6
 
 	b, err := ioutil.ReadAll(throttled)
 	if err != nil {
-		return nil, err
+		return nil, translateError(err)
 	}
 
 	if len(b) != int(length) && length > 0 {
@@ -87,11 +87,9 @@ func (s *b2Storage) PutBlob(ctx context.Context, id blob.ID, data blob.Bytes) er
 
 	o := s.bucket.Object(s.getObjectNameString(id))
 	w := o.NewWriter(ctx)
+	defer w.Close()
 
 	_, err = iocopy.Copy(w, throttled)
-	if err != nil {
-		_ = w.Close()
-	}
 
 	return translateError(err)
 }
