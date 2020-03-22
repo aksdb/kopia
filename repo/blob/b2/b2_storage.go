@@ -2,9 +2,9 @@
 package b2
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"io/ioutil"
 
 	"github.com/efarrer/iothrottler"
@@ -32,7 +32,6 @@ type b2Storage struct {
 }
 
 func (s *b2Storage) GetBlob(ctx context.Context, id blob.ID, offset, length int64) ([]byte, error) {
-
 	obj := s.getObject(id)
 
 	var r *b2.Reader
@@ -68,9 +67,9 @@ func (s *b2Storage) GetBlob(ctx context.Context, id blob.ID, offset, length int6
 func translateError(err error) error {
 	if b2.IsNotExist(err) {
 		return blob.ErrBlobNotFound
-	} else {
-		return err
 	}
+
+	return err
 }
 
 func (s *b2Storage) PutBlob(ctx context.Context, id blob.ID, data blob.Bytes) error {
@@ -86,6 +85,7 @@ func (s *b2Storage) PutBlob(ctx context.Context, id blob.ID, data blob.Bytes) er
 	}
 
 	o := s.getObject(id)
+
 	w := o.NewWriter(ctx)
 	defer w.Close() //nolint:errcheck
 
@@ -111,6 +111,7 @@ func (s *b2Storage) ListBlobs(ctx context.Context, prefix blob.ID, callback func
 	oi := s.bucket.List(ctx, b2.ListPrefix(s.getObjectNameString(prefix)))
 	for oi.Next() {
 		o := oi.Object()
+
 		attrs, err := o.Attrs(ctx)
 		if err != nil {
 			return errors.Wrapf(err, "cannot get attributes of object %q", o.Name())
@@ -143,32 +144,6 @@ func (s *b2Storage) Close(ctx context.Context) error {
 
 func (s *b2Storage) String() string {
 	return fmt.Sprintf("b2://%s/%s", s.BucketName, s.Prefix)
-}
-
-type progressReader struct {
-	cb           blob.ProgressFunc
-	blobID       string
-	completed    int64
-	totalLength  int64
-	lastReported int64
-}
-
-func (r *progressReader) Read(b []byte) (int, error) {
-	r.completed += int64(len(b))
-	if r.completed >= r.lastReported+1000000 && r.completed < r.totalLength {
-		r.cb(r.blobID, r.completed, r.totalLength)
-		r.lastReported = r.completed
-	}
-
-	return len(b), nil
-}
-
-func newProgressReader(cb blob.ProgressFunc, blobID string, totalLength int64) io.Reader {
-	if cb == nil {
-		return nil
-	}
-
-	return &progressReader{cb: cb, blobID: blobID, totalLength: totalLength}
 }
 
 func toBandwidth(bytesPerSecond int) iothrottler.Bandwidth {

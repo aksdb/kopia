@@ -2,9 +2,11 @@ package cli
 
 import (
 	"context"
+
+	"gopkg.in/alecthomas/kingpin.v2"
+
 	"github.com/kopia/kopia/repo/blob"
 	"github.com/kopia/kopia/repo/blob/b2"
-	"gopkg.in/alecthomas/kingpin.v2"
 )
 
 func init() {
