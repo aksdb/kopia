@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	b2storageType = "b2"
+	b2storageType     = "b2"
+	b2objectCacheSize = 10
 )
 
 type b2Storage struct {
@@ -28,6 +29,8 @@ type b2Storage struct {
 
 	downloadThrottler *iothrottler.IOThrottlerPool
 	uploadThrottler   *iothrottler.IOThrottlerPool
+
+	cache *b2Cache
 }
 
 func (s *b2Storage) GetBlob(ctx context.Context, id blob.ID, offset, length int64) ([]byte, error) {
@@ -105,13 +108,27 @@ func (s *b2Storage) getObjectNameString(id blob.ID) string {
 }
 
 func (s *b2Storage) getObject(id blob.ID) *b2.Object {
-	return s.bucket.Object(s.getObjectNameString(id))
+	fullID := s.getObjectNameString(id)
+	o := s.cache.Get(fullID)
+
+	if o != nil {
+		return o
+	}
+
+	return s.bucket.Object(fullID)
 }
 
 func (s *b2Storage) ListBlobs(ctx context.Context, prefix blob.ID, callback func(blob.Metadata) error) error {
 	oi := s.bucket.List(ctx, b2.ListPrefix(s.getObjectNameString(prefix)))
 	for oi.Next() {
 		o := oi.Object()
+
+		// We assume that the object will be used soon. So we cache it.
+		// Deletes and downloads usually happen as part of the callback
+		// so the object is still fresh. If it should be a cache miss, we
+		// need a separate HTTP call to B2 to fetch metadata first, which
+		// we try to avoid, of course.
+		s.cache.Add(o.Name(), o)
 
 		attrs, err := o.Attrs(ctx)
 		if err != nil {
@@ -181,6 +198,7 @@ func New(ctx context.Context, opt *Options) (blob.Storage, error) {
 		bucket:            bucket,
 		downloadThrottler: downloadThrottler,
 		uploadThrottler:   uploadThrottler,
+		cache:             newB2Cache(b2objectCacheSize),
 	}, nil
 }
 

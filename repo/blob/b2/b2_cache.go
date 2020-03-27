@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/kurin/blazer/b2"
-
-	"github.com/kopia/kopia/repo/blob"
 )
 
 // b2cache is a simple cache implementation to reuse metadata from already retrieved objects.
@@ -19,7 +17,7 @@ import (
 // element from the map.
 type b2Cache struct {
 	mtx     sync.Mutex
-	entries map[blob.ID]*b2CacheEntry
+	entries map[string]*b2CacheEntry
 	ring    *ring.Ring
 }
 
@@ -30,17 +28,17 @@ type b2CacheEntry struct {
 
 func newB2Cache(size int) *b2Cache {
 	return &b2Cache{
-		entries: make(map[blob.ID]*b2CacheEntry, size),
+		entries: make(map[string]*b2CacheEntry, size),
 		ring:    ring.New(size),
 	}
 }
 
-func (c *b2Cache) Add(id blob.ID, o *b2.Object) {
+func (c *b2Cache) Add(id string, o *b2.Object) {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 
 	if c.ring.Value != nil {
-		delete(c.entries, c.ring.Value.(blob.ID))
+		delete(c.entries, c.ring.Value.(string))
 	}
 
 	c.entries[id] = &b2CacheEntry{
@@ -52,7 +50,7 @@ func (c *b2Cache) Add(id blob.ID, o *b2.Object) {
 	c.ring = c.ring.Next()
 }
 
-func (c *b2Cache) Get(id blob.ID) *b2.Object {
+func (c *b2Cache) Get(id string) *b2.Object {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 

@@ -6,15 +6,13 @@ import (
 	"time"
 
 	"github.com/kurin/blazer/b2"
-
-	"github.com/kopia/kopia/repo/blob"
 )
 
 func TestB2CacheRingSize(t *testing.T) {
 	cache := newB2Cache(10)
 
 	type blobData struct {
-		id blob.ID
+		id string
 		o  *b2.Object
 	}
 
@@ -22,7 +20,7 @@ func TestB2CacheRingSize(t *testing.T) {
 
 	for i := 0; i < 11; i++ {
 		testBlobs = append(testBlobs, blobData{
-			id: blob.ID(strconv.Itoa(i)),
+			id: strconv.Itoa(i),
 			o:  &b2.Object{},
 		})
 	}
