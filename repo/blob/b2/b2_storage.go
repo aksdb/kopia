@@ -96,6 +96,7 @@ func (s *b2Storage) PutBlob(ctx context.Context, id blob.ID, data blob.Bytes) er
 func (s *b2Storage) DeleteBlob(ctx context.Context, id blob.ID) error {
 	o := s.getObject(id)
 	err := o.Delete(ctx)
+
 	return translateError(err)
 }
 

@@ -15,7 +15,7 @@ import (
 
 const (
 	testBucketEnv = "KOPIA_B2_TEST_BUCKET"
-	testKeyIdEnv  = "KOPIA_B2_TEST_KEY_ID"
+	testKeyIDEnv  = "KOPIA_B2_TEST_KEY_ID"
 	testKeyEnv    = "KOPIA_B2_TEST_KEY"
 )
 
@@ -31,7 +31,7 @@ func getEnvOrSkip(t *testing.T, name string) string {
 func TestB2Storage(t *testing.T) {
 	t.Parallel()
 	bucket := getEnvOrSkip(t, testBucketEnv)
-	keyId := getEnvOrSkip(t, testKeyIdEnv)
+	keyID := getEnvOrSkip(t, testKeyIDEnv)
 	key := getEnvOrSkip(t, testKeyEnv)
 
 	data := make([]byte, 8)
@@ -40,7 +40,7 @@ func TestB2Storage(t *testing.T) {
 	ctx := context.Background()
 	st, err := b2.New(ctx, &b2.Options{
 		BucketName: bucket,
-		KeyID:      keyId,
+		KeyID:      keyID,
 		Key:        key,
 		Prefix:     fmt.Sprintf("test-%v-%x-", time.Now().Unix(), data),
 	})
@@ -72,13 +72,13 @@ func TestB2Storage(t *testing.T) {
 
 func TestB2StorageInvalidBlob(t *testing.T) {
 	bucket := getEnvOrSkip(t, testBucketEnv)
-	keyId := getEnvOrSkip(t, testKeyIdEnv)
+	keyID := getEnvOrSkip(t, testKeyIDEnv)
 	key := getEnvOrSkip(t, testKeyEnv)
 
 	ctx := context.Background()
 	st, err := b2.New(ctx, &b2.Options{
 		BucketName: bucket,
-		KeyID:      keyId,
+		KeyID:      keyID,
 		Key:        key,
 	})
 
@@ -96,13 +96,13 @@ func TestB2StorageInvalidBlob(t *testing.T) {
 
 func TestB2StorageInvalidBucket(t *testing.T) {
 	bucket := fmt.Sprintf("invalid-bucket-%v", time.Now().UnixNano())
-	keyId := getEnvOrSkip(t, testKeyIdEnv)
+	keyID := getEnvOrSkip(t, testKeyIDEnv)
 	key := getEnvOrSkip(t, testKeyEnv)
 
 	ctx := context.Background()
 	_, err := b2.New(ctx, &b2.Options{
 		BucketName: bucket,
-		KeyID:      keyId,
+		KeyID:      keyID,
 		Key:        key,
 	})
 
@@ -113,13 +113,13 @@ func TestB2StorageInvalidBucket(t *testing.T) {
 
 func TestB2StorageInvalidCreds(t *testing.T) {
 	bucket := getEnvOrSkip(t, testBucketEnv)
-	keyId := "invalid-key-id"
+	keyID := "invalid-key-id"
 	key := "invalid-key"
 
 	ctx := context.Background()
 	_, err := b2.New(ctx, &b2.Options{
 		BucketName: bucket,
-		KeyID:      keyId,
+		KeyID:      keyID,
 		Key:        key,
 	})
 
