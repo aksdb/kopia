@@ -2,7 +2,6 @@
 package b2
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io/ioutil"
