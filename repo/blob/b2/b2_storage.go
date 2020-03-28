@@ -5,18 +5,19 @@ import (
 	"context"
 	"fmt"
 	"io/ioutil"
+	"net/http"
+	"time"
 
 	"github.com/efarrer/iothrottler"
-	"github.com/kurin/blazer/b2"
 	"github.com/pkg/errors"
+	"gopkg.in/kothar/go-backblaze.v0"
 
-	"github.com/kopia/kopia/internal/iocopy"
+	"github.com/kopia/kopia/internal/retry"
 	"github.com/kopia/kopia/repo/blob"
 )
 
 const (
-	b2storageType     = "b2"
-	b2objectCacheSize = 10
+	b2storageType = "b2"
 )
 
 type b2Storage struct {
@@ -24,54 +25,99 @@ type b2Storage struct {
 
 	ctx context.Context
 
-	cli    *b2.Client
-	bucket *b2.Bucket
+	cli    *backblaze.B2
+	bucket *backblaze.Bucket
 
 	downloadThrottler *iothrottler.IOThrottlerPool
 	uploadThrottler   *iothrottler.IOThrottlerPool
-
-	cache *b2Cache
 }
 
 func (s *b2Storage) GetBlob(ctx context.Context, id blob.ID, offset, length int64) ([]byte, error) {
-	obj := s.getObject(id)
+	fileName := s.getObjectNameString(id)
 
-	var r *b2.Reader
+	attempt := func() (interface{}, error) {
+		var fileRange *backblaze.FileRange
 
-	if length > 0 {
-		r = obj.NewRangeReader(ctx, offset, length)
-	} else {
-		r = obj.NewReader(ctx)
+		if length > 0 {
+			fileRange = &backblaze.FileRange{
+				Start: offset,
+				End:   offset + length - 1,
+			}
+		}
+
+		_, r, err := s.bucket.DownloadFileRangeByName(fileName, fileRange)
+		if err != nil {
+			return nil, err
+		}
+		defer r.Close() //nolint:errcheck
+
+		throttled, err := s.downloadThrottler.AddReader(r)
+		if err != nil {
+			return nil, err
+		}
+
+		b, err := ioutil.ReadAll(throttled)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(b) != int(length) && length > 0 {
+			return nil, errors.Errorf("invalid length, got %v bytes, but expected %v", len(b), length)
+		}
+
+		if length == 0 {
+			return []byte{}, nil
+		}
+
+		return b, nil
 	}
-	defer r.Close() //nolint:errcheck
 
-	throttled, err := s.downloadThrottler.AddReader(r)
-	if err != nil {
-		return nil, err
-	}
-
-	b, err := ioutil.ReadAll(throttled)
+	v, err := exponentialBackoff(ctx, fmt.Sprintf("GetBlob(%q,%v,%v)", id, offset, length), attempt)
 	if err != nil {
 		return nil, translateError(err)
 	}
 
-	if len(b) != int(length) && length > 0 {
-		return nil, errors.Errorf("invalid length, got %v bytes, but expected %v", len(id), length)
-	}
-
-	if length == 0 {
-		return []byte{}, nil
-	}
-
-	return b, nil
+	return v.([]byte), nil
 }
 
 func translateError(err error) error {
-	if b2.IsNotExist(err) {
-		return blob.ErrBlobNotFound
+	if b2err, ok := err.(*backblaze.B2Error); ok {
+		if b2err.Status == http.StatusNotFound {
+			// Normal "not found". That's fine.
+			return blob.ErrBlobNotFound
+		}
+
+		if b2err.Status == http.StatusBadRequest && b2err.Code == "already_hidden" {
+			// Special case when hiding a file that is already hidden. It's basically
+			// not found.
+			return blob.ErrBlobNotFound
+		}
 	}
 
 	return err
+}
+
+func exponentialBackoff(ctx context.Context, desc string, att retry.AttemptFunc) (interface{}, error) {
+	return retry.WithExponentialBackoff(ctx, desc, att, isRetriableError)
+}
+
+func isRetriableError(err error) bool {
+	if b2err, ok := err.(*backblaze.B2Error); ok {
+		switch b2err.Status {
+		case http.StatusRequestTimeout:
+			return true
+		case http.StatusTooManyRequests:
+			return true
+		case http.StatusInternalServerError:
+			return true
+		case http.StatusServiceUnavailable:
+			return true
+		case http.StatusGatewayTimeout:
+			return true
+		}
+	}
+
+	return false
 }
 
 func (s *b2Storage) PutBlob(ctx context.Context, id blob.ID, data blob.Bytes) error {
@@ -86,67 +132,62 @@ func (s *b2Storage) PutBlob(ctx context.Context, id blob.ID, data blob.Bytes) er
 		defer progressCallback(string(id), int64(data.Length()), int64(data.Length()))
 	}
 
-	o := s.getObject(id)
-
-	w := o.NewWriter(ctx)
-	defer w.Close() //nolint:errcheck
-
-	_, err = iocopy.Copy(w, throttled)
+	fileName := s.getObjectNameString(id)
+	_, err = s.bucket.UploadFile(fileName, nil, throttled)
 
 	return translateError(err)
 }
 
 func (s *b2Storage) DeleteBlob(ctx context.Context, id blob.ID) error {
-	o := s.getObject(id)
-	err := o.Delete(ctx)
+	fileName := s.getObjectNameString(id)
+	_, err := s.bucket.HideFile(fileName)
+	err = translateError(err)
 
-	return translateError(err)
+	if err == blob.ErrBlobNotFound {
+		// Deleting failed because it already is deleted? Fine.
+		return nil
+	}
+
+	return err
 }
 
 func (s *b2Storage) getObjectNameString(id blob.ID) string {
 	return s.Prefix + string(id)
 }
 
-func (s *b2Storage) getObject(id blob.ID) *b2.Object {
-	fullID := s.getObjectNameString(id)
-	o := s.cache.Get(fullID)
-
-	if o != nil {
-		return o
-	}
-
-	return s.bucket.Object(fullID)
-}
-
 func (s *b2Storage) ListBlobs(ctx context.Context, prefix blob.ID, callback func(blob.Metadata) error) error {
-	oi := s.bucket.List(ctx, b2.ListPrefix(s.getObjectNameString(prefix)))
-	for oi.Next() {
-		o := oi.Object()
+	const maxFileQuery = 1000
 
-		// We assume that the object will be used soon. So we cache it.
-		// Deletes and downloads usually happen as part of the callback
-		// so the object is still fresh. If it should be a cache miss, we
-		// need a separate HTTP call to B2 to fetch metadata first, which
-		// we try to avoid, of course.
-		s.cache.Add(o.Name(), o)
+	fullPrefix := s.getObjectNameString(prefix)
+	nextFile := ""
 
-		attrs, err := o.Attrs(ctx)
+	for {
+		resp, err := s.bucket.ListFileNamesWithPrefix(nextFile, maxFileQuery, fullPrefix, "")
 		if err != nil {
-			return errors.Wrapf(err, "cannot get attributes of object %q", o.Name())
-		}
-
-		bm := blob.Metadata{
-			BlobID:    blob.ID(o.Name()[len(s.Prefix):]),
-			Length:    attrs.Size,
-			Timestamp: attrs.LastModified,
-		}
-
-		if err := callback(bm); err != nil {
 			return err
 		}
+
+		for i := range resp.Files {
+			f := &resp.Files[i]
+			bm := blob.Metadata{
+				BlobID:    blob.ID(f.Name[len(s.Prefix):]),
+				Length:    f.ContentLength,
+				Timestamp: time.Unix(0, f.UploadTimestamp*int64(time.Millisecond)),
+			}
+
+			if err := callback(bm); err != nil {
+				return err
+			}
+		}
+
+		nextFile = resp.NextFileName
+
+		if nextFile == "" {
+			break
+		}
 	}
 
-	return oi.Err()
+	return nil
 }
 
 func (s *b2Storage) ConnectionInfo() blob.ConnectionInfo {
@@ -178,7 +219,7 @@ func New(ctx context.Context, opt *Options) (blob.Storage, error) {
 		return nil, errors.New("bucket name must be specified")
 	}
 
-	cli, err := b2.NewClient(ctx, opt.KeyID, opt.Key)
+	cli, err := backblaze.NewB2(backblaze.Credentials{KeyID: opt.KeyID, ApplicationKey: opt.Key})
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to create client")
 	}
@@ -186,9 +227,13 @@ func New(ctx context.Context, opt *Options) (blob.Storage, error) {
 	downloadThrottler := iothrottler.NewIOThrottlerPool(toBandwidth(opt.MaxDownloadSpeedBytesPerSecond))
 	uploadThrottler := iothrottler.NewIOThrottlerPool(toBandwidth(opt.MaxUploadSpeedBytesPerSecond))
 
-	bucket, err := cli.Bucket(ctx, opt.BucketName)
+	bucket, err := cli.Bucket(opt.BucketName)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot open bucket %q", opt.BucketName)
+	}
+
+	if bucket == nil {
+		return nil, fmt.Errorf("bucket not found: %s", opt.BucketName)
 	}
 
 	return &b2Storage{
@@ -198,7 +243,6 @@ func New(ctx context.Context, opt *Options) (blob.Storage, error) {
 		bucket:            bucket,
 		downloadThrottler: downloadThrottler,
 		uploadThrottler:   uploadThrottler,
-		cache:             newB2Cache(b2objectCacheSize),
 	}, nil
 }
 
